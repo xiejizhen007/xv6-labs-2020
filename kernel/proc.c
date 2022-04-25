@@ -34,12 +34,13 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
+      p->kstack = 0;
   }
   kvminithart();
 }
@@ -106,6 +107,7 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  // printf("alloc pid %d\n", p->pid);
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -120,6 +122,22 @@ found:
     release(&p->lock);
     return 0;
   }
+
+  // create kernel page table
+  p->kpagetable = kvmcreate();
+  // printf("allocproc\n");
+  if (p->kpagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK(0);
+  ukvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -141,6 +159,16 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  
+  if (p->kstack != 0) {
+    pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+    kfree((void*)PTE2PA(*pte));
+  }
+
+  if (p->kpagetable) {
+    kvmfree(p->kpagetable);
+  }
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -221,6 +249,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // copy_page(p->pagetable, p->kpagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -249,6 +279,8 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  
+  // copy_page(p->pagetable, p->kpagetable, sz, p->sz);
   p->sz = sz;
   return 0;
 }
@@ -274,6 +306,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // copy_page(np->pagetable, np->kpagetable, 0, np->sz);
 
   np->parent = p;
 
@@ -473,12 +507,17 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // switch kernel page table 
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
+        kvminithart();
         found = 1;
       }
       release(&p->lock);

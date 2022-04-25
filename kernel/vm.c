@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -121,6 +123,14 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+// proc mapping the kernel page table
+void
+ukvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+  if (mappages(pagetable, va, sz, pa, perm) != 0) {
+    panic("ukvmmap");
+  }
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -131,8 +141,9 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
+  struct proc *p = myproc();
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(p->kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -205,6 +216,33 @@ uvmcreate()
     return 0;
   memset(pagetable, 0, PGSIZE);
   return pagetable;
+}
+
+// create a kernel page table for user page table
+pagetable_t
+kvmcreate(void) {
+  pagetable_t kpagetable;
+  kpagetable = uvmcreate();
+
+  if (kpagetable == 0)
+    return 0;
+
+  // 将进程中的内核页表指向全局内核页表
+  // 不用 0 是因为要将下面的硬件映射到 l2 的 0 号页表中
+  for (int i = 1; i < 255; i++)
+    kpagetable[i] = kernel_pagetable[i];
+  
+  // 映射硬件，释放时需要单独处理
+  // printf("clint entry: %d\n", CLINT >> 9 >> 9 >> 12);
+  ukvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  ukvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  ukvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  ukvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // printf("trampoline entry: %d\n", TRAMPOLINE >> 9 >> 9 >> 12);
+  ukvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kpagetable;
 }
 
 // Load the user initcode into address 0 of pagetable,
@@ -299,6 +337,28 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+void
+kvmfree_entry(pagetable_t pagetable, int entry) {
+  pte_t pte = pagetable[entry];
+  pagetable_t level1 = (pagetable_t)PTE2PA(pte);
+  for (int i = 0; i < 512; i++) {
+    pte_t pte1 = level1[i];
+    if (pte1 & PTE_V) {
+      uint64 level2 = PTE2PA(pte1);
+      kfree((void *)level2);
+      level1[i] = 0;
+    }
+  }
+  kfree((void*) level1);
+}
+
+void
+kvmfree(pagetable_t kpagetable) {
+  kvmfree_entry(kpagetable, 0);     // 硬件
+  kvmfree_entry(kpagetable, 255);   // 内核栈
+  kfree((void*) kpagetable);
+}
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -373,6 +433,39 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   return 0;
 }
 
+// 将数据从 pagetable 复制到 kpagetable
+void
+copy_page(pagetable_t pagetable, pagetable_t kpagetable, int oldsz, int newsz) {
+  if (newsz >= PLIC) {
+    panic("copy_page: newsz is too big");
+  }
+
+  if (oldsz < newsz) {
+    for (int va = oldsz; va <= newsz; va += PGSIZE) {
+      pte_t *upte = walk(pagetable, va, 0);
+      if (upte == 0) {
+        panic("copy_page: upte is 0");
+      }
+
+      pte_t *kpte = walk(kpagetable, va, 1);
+      if (kpte == 0) {
+        panic("copy_page: kpt is 0");
+      }
+
+      // 将内核的 pte 直接指向用户的 pte，共享数据
+      *kpte = *upte;
+      // 按课上的说法，禁止 U 是因为内核无法获得设有 U 的页
+      // 内核只需读取数据，所以禁止 W 和 X 是可行的
+      *kpte &= ~(PTE_U | PTE_W | PTE_X);
+    }
+  } else {
+    if (PGROUNDUP(newsz) < PGROUNDUP(oldsz)) {
+      int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+      uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+    }
+  }
+}
+
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
@@ -396,6 +489,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     srcva = va0 + PGSIZE;
   }
   return 0;
+  // return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -439,6 +533,8 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+  return 0;
+  // return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 void
