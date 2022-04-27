@@ -441,7 +441,9 @@ copy_page(pagetable_t pagetable, pagetable_t kpagetable, int oldsz, int newsz) {
   }
 
   if (oldsz < newsz) {
-    for (int va = oldsz; va <= newsz; va += PGSIZE) {
+    // printf("copy_page: size up\n");
+    // for (int va = PGROUNDUP(oldsz); va < PGROUNDUP(newsz); va += PGSIZE) {
+    for (int va = oldsz; va < newsz; va += PGSIZE) {
       pte_t *upte = walk(pagetable, va, 0);
       if (upte == 0) {
         panic("copy_page: upte is 0");
@@ -459,9 +461,13 @@ copy_page(pagetable_t pagetable, pagetable_t kpagetable, int oldsz, int newsz) {
       *kpte &= ~(PTE_U | PTE_W | PTE_X);
     }
   } else {
+    // printf("copy_page: size down\n");
     if (PGROUNDUP(newsz) < PGROUNDUP(oldsz)) {
       int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-      uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+      // 这里需要解除 kernel page table 的映射，而不是用户的 pagetable
+      // why? 总的来说，这里是将用户空间的数据复制到内核空间
+      // 解除映射的时候，就是不想分享给内核了，所以只需要解除内核空间的映射
+      uvmunmap(kpagetable, PGROUNDUP(newsz), npages, 0);
     }
   }
 }
@@ -472,6 +478,7 @@ copy_page(pagetable_t pagetable, pagetable_t kpagetable, int oldsz, int newsz) {
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  return copyin_new(pagetable, dst, srcva, len);
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -489,7 +496,6 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     srcva = va0 + PGSIZE;
   }
   return 0;
-  // return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -499,6 +505,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  return copyinstr_new(pagetable, dst, srcva, max);
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -534,7 +541,6 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
   return 0;
-  // return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 void

@@ -249,7 +249,7 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
-  // copy_page(p->pagetable, p->kpagetable, 0, p->sz);
+  copy_page(p->pagetable, p->kpagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -273,6 +273,10 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if (PGROUNDUP(sz + n) >= PLIC) {
+      return -1;
+    }
+
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
@@ -280,7 +284,8 @@ growproc(int n)
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   
-  // copy_page(p->pagetable, p->kpagetable, sz, p->sz);
+  // 空间增长之后，需要将增长之后的数据重新映射到内核？
+  copy_page(p->pagetable, p->kpagetable, p->sz, sz);
   p->sz = sz;
   return 0;
 }
@@ -299,6 +304,8 @@ fork(void)
     return -1;
   }
 
+  // printf("pid %d fork a child %d\n", p->pid, np->pid);
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -307,7 +314,9 @@ fork(void)
   }
   np->sz = p->sz;
 
-  // copy_page(np->pagetable, np->kpagetable, 0, np->sz);
+  // 不使用父进程的 pagetable
+  // 防止父进程退出导致子进程的 kpagetable 被销毁
+  copy_page(np->pagetable, np->kpagetable, 0, np->sz);
 
   np->parent = p;
 

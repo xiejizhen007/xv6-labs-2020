@@ -116,7 +116,11 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-  if (p->pid) {
+  // 刷新数据
+  copy_page(p->pagetable, p->kpagetable, oldsz, 0);
+  copy_page(p->pagetable, p->kpagetable, 0, p->sz);
+
+  if (p->pid == 1) {
     vmprint(p->pagetable);
   }
 
