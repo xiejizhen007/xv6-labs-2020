@@ -121,6 +121,11 @@ found:
     return 0;
   }
 
+  p->interval = -1;
+  p->handler = 0;
+  p->ticks = 0;
+  p->sig = 0;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
