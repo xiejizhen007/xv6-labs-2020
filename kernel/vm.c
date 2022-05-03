@@ -182,8 +182,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    if((*pte & PTE_V) == 0) {
+      *pte = 0;
+      continue;
+    }
+      // panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -439,4 +442,52 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+alloc_page(pagetable_t pagetable, uint64 va) {
+  void *pa = kalloc();
+  if (pa == 0) {
+    printf("alloc_page error kalloc\n");
+    return -1;
+  }
+
+  memset(pa, 0, PGSIZE);
+  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
+    kfree(pa);
+    return -1;
+  }
+
+  // printf("alloc a page is ok, va: %p, pa: %p\n", va, pa);
+  return 0;
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+
+  for (int i = 0; i < 1; i++) {
+    pte_t pte0 = pagetable[i];
+    if (pte0 & PTE_V) {
+      uint64 l0 = PTE2PA(pte0);
+      printf("..%d: pte %p pa %p\n", i, pte0, l0);
+
+      for (int j = 0; j < 512; j++) {
+        pte_t pte1 = ((pagetable_t)l0)[j];
+        if (pte1 & PTE_V) {
+          uint64 l1 = PTE2PA(pte1);
+          printf(".. ..%d: pte %p pa %p\n", j, pte1, l1);
+
+          for (int k = 0; k < 512; k++) {
+            pte_t pte2 = ((pagetable_t)l1)[k];
+            if (pte2 & PTE_V) {
+              uint64 l2 = PTE2PA(pte2);
+              printf(".. .. ..%d: pte %p pa %p\n", k, pte2, l2);
+            }
+          }   // level 2
+        }
+      }   // level 1
+    }
+  }   // level 0
 }
