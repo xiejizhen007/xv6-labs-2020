@@ -69,11 +69,16 @@ usertrap(void)
     // ok
   } else if (r_scause() == 13 || r_scause() == 15) {
     uint64 va = r_stval();
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-
-    if (alloc_page(p->pagetable, va) == -1) {
-      printf("can not alloc a page\n");
+    // printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    // if (va >= p->sz || PGROUNDUP(p->trapframe->sp) - 1 >= va) {
+    if (va >= p->sz || va < p->trapframe->sp) {
+      // 超出了 proc 的地址空间，直接 kill
+      // 或者 va 进入了栈空间
+      p->killed = 1;
+    } else if (alloc_page(p->pagetable, va) == -1) {
+      // 分配失败，kill 掉
+      // printf("can not alloc a page\n");
       p->killed = 1;
     }
 

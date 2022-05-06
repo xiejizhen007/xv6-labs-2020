@@ -43,14 +43,30 @@ sys_sbrk(void)
 {
   int addr;
   int n;
+  int sz;
 
   if(argint(0, &n) < 0)
     return -1;
   struct proc *p = myproc();
   addr = p->sz;
-  // if(growproc(n) < 0)
-  //   return -1;
-  p->sz += n;
+  sz = p->sz;
+
+  if (n >= 0) {
+    if (p->sz + n > MAXVA) {
+      return -1;
+    }
+    // lazy alloc
+    // 只增长地址空间，之后用到再分配实际的内存
+    p->sz += n;
+  } else if (sz + n > 0) {
+    // n 为负数的情况下，把多余的那部分去掉
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    p->sz = sz;
+  } else {
+    return -1;
+    // p->sz = uvmdealloc(p->pagetable, p->sz, p->sz + n);
+  }
+
   return addr;
 }
 
