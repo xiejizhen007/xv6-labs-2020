@@ -67,6 +67,12 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 7 || r_scause() == 15) {
+    // cow page fault
+    if (onwrite_page(p->pagetable, r_stval()) != 0) {
+      printf("pid %d on write failed\n", p->pid);
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
