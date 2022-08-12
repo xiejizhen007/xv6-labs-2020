@@ -165,6 +165,71 @@ bad:
   return -1;
 }
 
+uint64
+sys_symlink(void) {
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *dp, *ip;
+  char name[DIRSIZ];
+  
+  // symbolic link target to path
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  // 获得父文件的 inode
+  // path = "/a/b/c"
+  // dp = inode("/a/b/")
+  // name = "c"
+  if ((dp = nameiparent(path, name)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  // printf("symlink --- target: %s, path: %s, name: %s\n", target, path, name);
+
+  ilock(dp);
+
+  // 在 dp 目录下查找 name 这个 inode
+  // 当前 inode 已经存在
+  if ((ip = dirlookup(dp, name, 0)) != 0) {
+    // printf("have ip\n");
+    iput(ip);
+    iunlockput(dp);
+    end_op();
+    return -1;
+  }
+
+  // 当前 inode 不存在
+  // create new inode
+  if ((ip = ialloc(dp->dev, T_SYMLINK)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  ilock(ip);
+  // 全新的 inode
+  ip->major = 0;
+  ip->minor = 0;
+  ip->nlink = 1;
+  iupdate(ip);
+
+  if (writei(ip, 0, (uint64)target, 0, strlen(target) + 1) != strlen(target) + 1) {
+    panic("symlink: writei");
+  }
+
+  // 将 ip 表示的 inode 写入到 dp 表示的目录下
+  if (dirlink(dp, name, ip->inum) != 0) {
+    panic("symlink: dirlink");
+  }
+
+  iunlockput(dp);
+  iunlockput(ip);
+  end_op();
+
+  return 0;
+}
+
 // Is the directory dp empty except for "." and ".." ?
 static int
 isdirempty(struct inode *dp)
@@ -296,25 +361,42 @@ sys_open(void)
     return -1;
 
   begin_op();
+  // continue
+  int ctn = 0;
+  int count = 10;
 
-  if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
-    if(ip == 0){
-      end_op();
-      return -1;
+  do {
+    ctn = 0;
+    if(omode & O_CREATE){
+      ip = create(path, T_FILE, 0, 0);
+      if(ip == 0){
+        end_op();
+        return -1;
+      }
+    } else {
+      if((ip = namei(path)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type == T_DIR && omode != O_RDONLY){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      } else if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
+        readi(ip, 0, (uint64)path, 0, MAXPATH);
+        ctn = 1;
+        count--;
+        iunlockput(ip);
+
+        if (count <= 0) {
+          end_op();
+          return -1;
+        }
+      }
     }
-  } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
-    }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
-      return -1;
-    }
-  }
+  } while (ctn);
+
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
