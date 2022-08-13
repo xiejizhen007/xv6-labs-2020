@@ -134,6 +134,11 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // init vma array
+  for (int i = 0; i < NVMA; i++) {
+    p->vma[i].f = 0;
+  }
+
   return p;
 }
 
@@ -296,6 +301,17 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for (i = 0; i < NVMA; i++) {
+    if (p->vma[i].f) {
+      np->vma[i].addr = p->vma[i].addr;
+      np->vma[i].length = p->vma[i].length;
+      np->vma[i].prot = p->vma[i].prot;
+      np->vma[i].flags = p->vma[i].flags;
+      np->vma[i].f = filedup(p->vma[i].f);
+      np->vma[i].offset = p->vma[i].offset;
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -343,6 +359,13 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].f != 0) {
+      munmap(p, &p->vma[i], p->vma[i].addr, p->vma[i].length);
+      p->vma[i].f = 0;
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
